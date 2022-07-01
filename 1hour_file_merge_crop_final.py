@@ -17,37 +17,48 @@ from collections import Counter
 
 _BEGIN_AT = datetime.datetime.now()
 
+ONLY_MERGE = False
+
 global datalist
 datalist = []
 
 # save path
-savepath = 'F:/final_test/'
+savepath = ''
 
-# file path
+# raw path
 global rawpath
-rawpath = 'E:/ICU_raw/202101/'
+rawpath = ''
 os.chdir(rawpath)
+
+def replaceVitalfile():
+    for dirpath, dirname, files in os.walk(savepath):
+        for filename in files:
+            if filename.endswith('tmp'):
+                path = os.path.join(dirpath,filename)
+                move(path, path.replace('.tmp',''))
 
 # count new file 
 def countVitalfile():
     filelist = []
     savelist = sum([files for _, _, files in os.walk(savepath)],[])
+    savelist = [file for file in savelist if file.endswith('vital')]
+    mergelist = [file[:-17] for file in savelist if 'merge' in file]
+
     # 파일명을 기준으로 변경할 파일만 추출
     for path, dir, files in os.walk(rawpath):
         for file in files:
             if os.path.splitext(file)[-1] != '.vital':
                 continue
             
-            if not file in savelist :
+            if file not in savelist and file[:-10] not in mergelist :
                 filelist.append(os.path.join(path, file))
 
-    return filelist
+    return filelist, savelist
 
 # 1시간 이내 파일인지 아닌지 확인
 def checkVitalfile(file):
     for filepath in file:
         filename = filepath.split('\\')[-1]
-        print(filename)
         try:
             vf = vitaldb.VitalFile(filepath)
         except:
@@ -73,7 +84,8 @@ def checkVitalfile(file):
 
 # 1시간이상인 파일들은 정각 단위를 기준으로 crop
 def cropVitalfile(file, filepath, vf, dtstart, startDateHour, endDateHour):
-    global savepath 
+    global savepath
+    print(f'cropping...{file}')
     timeCount = ((endDateHour - startDateHour)/3600).seconds
     for hour in range(timeCount+1):
         newvf = copy.deepcopy(vf)
@@ -103,6 +115,7 @@ def cropVitalfile(file, filepath, vf, dtstart, startDateHour, endDateHour):
         if hour > 0 :
             newpath = newpath.replace('20'+oldDatetime.split('_')[0][:4],newDate[:6])
             newpath = newpath.replace(oldDatetime.split('_')[0],newDate[2:8])
+            
         os.makedirs(newpath, exist_ok=True)
 
         try:
@@ -110,7 +123,7 @@ def cropVitalfile(file, filepath, vf, dtstart, startDateHour, endDateHour):
         except KeyboardInterrupt:
             quit()
         except BadGzipFile:
-            print(file)
+            print('error file: {file}')
             pass
         else:
             move(os.path.join(newpath,filename)+'.tmp', os.path.join(newpath,filename))
@@ -123,23 +136,24 @@ def findVitalfile(name,path):
 
 # 1시간이내 파일이 여러개인 경우 merge
 def mergeVitalfile():
+    replaceVitalfile()
     savelist = sum([files for _, _, files in os.walk(savepath)],[])
-    savelist = [file for file in savelist if not ".tmp" in file] 
-    print(len(savelist))
-    cutlist = [file[:-10] for file in savelist]
-
+    # mergelist = [file for file in savelist if not "merge" in file ] 
+    cutlist = [file[:file.find(file.split('_')[3])+2] for file in savelist]
+    count = 0
     for key, value in Counter(cutlist).items():
         filelist = []
         if value >= 2:
             matching = [s for s in savelist if key in s]
-            print(matching)
             for file in matching:
                 filepath = findVitalfile(file, savepath)
                 filelist.append(filepath)
+            print(f'merging...{key}')
 
-            filename = filelist[0].replace('.vital','_merge.vital')
-
+            filename = filelist[0].replace('.vital','_merged.vital')
+            # name = filename.split('\\')[-1]
             try:
+                print('validating...'+filename.split("\\")[-1])
                 vf = vitaldb.VitalFile(filelist)
                 vf.to_vital(filename+'.tmp')
                 for filepath in filelist:
@@ -148,17 +162,31 @@ def mergeVitalfile():
                 quit()
             else:
                 move(filename+'.tmp', filename)
+                count += 1
+
+    finalist = sum([files for _, _, files in os.walk(savepath)],[])
+    
+    return finalist, count
 
 if __name__ == '__main__':
     num_cores=multiprocessing.cpu_count()-1
-    # checkVitalfile(['E:/ICU_raw/202101/CCU\\CCU_1\\210101\\CCU_1_210101_042427.vital'])
-    fileList = countVitalfile()
-    print(len(fileList))
+    replaceVitalfile()
+    fileList, savelist = countVitalfile()
+    if ONLY_MERGE : 
+        print(f'# only merging...')
+        finalist, count = mergeVitalfile()
+        print(f'# merging file counts: {count}')
+        _END_AT = datetime.datetime.now()
+        print("# begin:", _BEGIN_AT)
+        print("# end:", _END_AT)
+        quit()
+    print(f'# scanning...{len(fileList)} vitalfiles')
     splited_data =  np.array_split(fileList, num_cores)
     splited_data = [x.tolist() for x in splited_data]   
     result = parmap.map(checkVitalfile, splited_data, pm_pbar=True, pm_processes=num_cores)
-    mergeVitalfile()
+    finalist, count = mergeVitalfile()
 
     _END_AT = datetime.datetime.now()
-    print("begin:", _BEGIN_AT)
-    print("end:", _END_AT)
+    print("# begin:", _BEGIN_AT)
+    print("# end:", _END_AT)
+    print(f'# original file counts: {len(fileList)}\n# result file counts: {len(set(finalist)-set(savelist))}')
