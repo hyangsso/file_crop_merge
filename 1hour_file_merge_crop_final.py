@@ -1,4 +1,5 @@
 from gzip import BadGzipFile
+from pickle import FALSE
 import re
 from tabnanny import check
 import vitaldb
@@ -17,7 +18,7 @@ from collections import Counter
 
 _BEGIN_AT = datetime.datetime.now()
 
-ONLY_MERGE = True
+ONLY_MERGE = False
 
 global datalist
 datalist = []
@@ -171,19 +172,22 @@ def mergeVitalfile():
     
     return finalist, count 
 
+def onlyMergeVitalfile():
+    print(f'# only merging', end='...', flush=True)
+    finalist, count = mergeVitalfile()
+    print('done')
+    print(f'# merging file counts: {count}')
+    _END_AT = datetime.datetime.now()
+    print("# begin:", _BEGIN_AT)
+    print("# end:", _END_AT)
+    quit()
+
 if __name__ == '__main__':
     num_cores=multiprocessing.cpu_count()-1
     replaceVitalfile()
     fileList, savelist = countVitalfile()
     if ONLY_MERGE : 
-        print(f'# only merging', end='...', flush=True)
-        finalist, count = mergeVitalfile()
-        print('done')
-        print(f'# merging file counts: {count}')
-        _END_AT = datetime.datetime.now()
-        print("# begin:", _BEGIN_AT)
-        print("# end:", _END_AT)
-        quit()
+        onlyMergeVitalfile()
     print(f'# scanning {len(fileList)} vitalfiles')
     splited_data =  np.array_split(fileList, num_cores)
     splited_data = [x.tolist() for x in splited_data]   
