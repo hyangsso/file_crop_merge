@@ -1,5 +1,4 @@
 from gzip import BadGzipFile
-from pickle import FALSE
 import re
 from tabnanny import check
 import vitaldb
