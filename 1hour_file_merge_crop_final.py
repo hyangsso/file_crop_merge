@@ -17,7 +17,7 @@ from collections import Counter
 
 _BEGIN_AT = datetime.datetime.now()
 
-ONLY_MERGE = False
+ONLY_MERGE = True
 
 global datalist
 datalist = []
@@ -63,9 +63,10 @@ def checkVitalfile(file):
             vf = vitaldb.VitalFile(filepath)
         except:
             continue
-        startTime = datetime.datetime.strptime(time.strftime("%Y/%m/%d %H:%M:%S", time.localtime(vf.dtstart)),"%Y/%m/%d %H:%M:%S")
+        format = '%Y/%m/%d %H:%M:%S'
+        startTime = datetime.datetime.strptime(time.strftime(format, time.localtime(vf.dtstart)),format)
         startDateHour = startTime.replace(minute=0, second=0)
-        endTime = datetime.datetime.strptime(time.strftime("%Y/%m/%d %H:%M:%S", time.localtime(vf.dtend)),"%Y/%m/%d %H:%M:%S")
+        endTime = datetime.datetime.strptime(time.strftime(format, time.localtime(vf.dtend)),format)
         endDateHour = endTime.replace(minute=0, second=0)
         if endDateHour - startDateHour != datetime.timedelta(0):
             cropVitalfile(filename, filepath, vf, startTime, startDateHour, endDateHour)
@@ -85,7 +86,7 @@ def checkVitalfile(file):
 # 1시간이상인 파일들은 정각 단위를 기준으로 crop
 def cropVitalfile(file, filepath, vf, dtstart, startDateHour, endDateHour):
     global savepath
-    print(f'cropping...{file}')
+    print(f'trimming {file}', end='...', flush=True)
     timeCount = ((endDateHour - startDateHour)/3600).seconds
     for hour in range(timeCount+1):
         newvf = copy.deepcopy(vf)
@@ -127,9 +128,10 @@ def cropVitalfile(file, filepath, vf, dtstart, startDateHour, endDateHour):
             pass
         else:
             move(os.path.join(newpath,filename)+'.tmp', os.path.join(newpath,filename))
+    print('done')
 
 # 1시간이내 파일이 여러개인지 확인
-def findVitalfile(name,path):
+def findVitalfile(name, path):
     for dirpath, dirname, filename in os.walk(savepath):
         if name in filename:
             return str(os.path.join(dirpath, name))
@@ -139,7 +141,7 @@ def mergeVitalfile():
     replaceVitalfile()
     savelist = sum([files for _, _, files in os.walk(savepath)],[])
     # mergelist = [file for file in savelist if not "merge" in file ] 
-    cutlist = [file[:file.find(file.split('_')[3])+2] for file in savelist]
+    cutlist = [file[:file.find(file.split('_')[3])+2] for file in savelist if file.endswith('vital')]
     count = 0
     for key, value in Counter(cutlist).items():
         filelist = []
@@ -148,12 +150,12 @@ def mergeVitalfile():
             for file in matching:
                 filepath = findVitalfile(file, savepath)
                 filelist.append(filepath)
-            print(f'merging...{key}')
+            print(f'merging {key}', end='...', flush=True)
 
             filename = filelist[0].replace('.vital','_merged.vital')
             # name = filename.split('\\')[-1]
             try:
-                print('validating...'+filename.split("\\")[-1])
+                print('validating '+filename.split("\\")[-1], end='...', flush=True)
                 vf = vitaldb.VitalFile(filelist)
                 vf.to_vital(filename+'.tmp')
                 for filepath in filelist:
@@ -163,24 +165,26 @@ def mergeVitalfile():
             else:
                 move(filename+'.tmp', filename)
                 count += 1
+            print('done')
 
     finalist = sum([files for _, _, files in os.walk(savepath)],[])
     
-    return finalist, count
+    return finalist, count 
 
 if __name__ == '__main__':
     num_cores=multiprocessing.cpu_count()-1
     replaceVitalfile()
     fileList, savelist = countVitalfile()
     if ONLY_MERGE : 
-        print(f'# only merging...')
+        print(f'# only merging', end='...', flush=True)
         finalist, count = mergeVitalfile()
+        print('done')
         print(f'# merging file counts: {count}')
         _END_AT = datetime.datetime.now()
         print("# begin:", _BEGIN_AT)
         print("# end:", _END_AT)
         quit()
-    print(f'# scanning...{len(fileList)} vitalfiles')
+    print(f'# scanning {len(fileList)} vitalfiles')
     splited_data =  np.array_split(fileList, num_cores)
     splited_data = [x.tolist() for x in splited_data]   
     result = parmap.map(checkVitalfile, splited_data, pm_pbar=True, pm_processes=num_cores)
