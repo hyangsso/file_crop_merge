@@ -17,7 +17,7 @@ from collections import Counter
 
 _BEGIN_AT = datetime.datetime.now()
 
-ONLY_MERGE = False
+ONLY_MERGE = True
 
 global datalist
 datalist = []
@@ -32,10 +32,11 @@ os.chdir(rawpath)
 
 def replaceVitalfile():
     for dirpath, dirname, files in os.walk(savepath):
-        for filename in files:
-            if filename.endswith('tmp'):
-                path = os.path.join(dirpath,filename)
-                move(path, path.replace('.tmp',''))
+        if rawpath.split('/',2)[2] in dirpath.replace('\\','/'):
+            for filename in files:
+                if filename.endswith('tmp'):
+                    path = os.path.join(dirpath,filename)
+                    move(path, path.replace('.tmp',''))
 
 # count new file 
 def countVitalfile():
@@ -63,10 +64,9 @@ def checkVitalfile(file):
             vf = vitaldb.VitalFile(filepath)
         except:
             continue
-        format = '%Y/%m/%d %H:%M:%S'
-        startTime = datetime.datetime.strptime(time.strftime(format, time.localtime(vf.dtstart)),format)
+        startTime = datetime.datetime.strptime(time.strftime("%Y/%m/%d %H:%M:%S", time.localtime(vf.dtstart)),"%Y/%m/%d %H:%M:%S")
         startDateHour = startTime.replace(minute=0, second=0)
-        endTime = datetime.datetime.strptime(time.strftime(format, time.localtime(vf.dtend)),format)
+        endTime = datetime.datetime.strptime(time.strftime("%Y/%m/%d %H:%M:%S", time.localtime(vf.dtend)),"%Y/%m/%d %H:%M:%S")
         endDateHour = endTime.replace(minute=0, second=0)
         if endDateHour - startDateHour != datetime.timedelta(0):
             cropVitalfile(filename, filepath, vf, startTime, startDateHour, endDateHour)
