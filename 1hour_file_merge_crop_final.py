@@ -1,199 +1,119 @@
-from gzip import BadGzipFile
-import re
-from tabnanny import check
-import vitaldb
-import pandas as pd
 import os
+import vitaldb
 import datetime
-import time
-from shutil import move
-import parmap
-import time
 import copy
-import parmap
-import multiprocessing
-import numpy as np 
-from collections import Counter
-
-_BEGIN_AT = datetime.datetime.now()
-
-ONLY_MERGE = True
-
-global datalist
-datalist = []
-
-# save path
-savepath = ''
+import numpy as np
+import shutil
+from joblib import Parallel, delayed
 
 # raw path
-global rawpath
-rawpath = ''
-os.chdir(rawpath)
+RAW_DIR = ''
 
-def replaceVitalfile():
-    for dirpath, dirname, files in os.walk(savepath):
-        if rawpath.split('/',2)[2] in dirpath.replace('\\','/'):
-            for filename in files:
-                if filename.endswith('tmp'):
-                    path = os.path.join(dirpath,filename)
-                    move(path, path.replace('.tmp',''))
+# save path
+OUTPUT_DIR = ''
 
-# count new file 
-def countVitalfile():
-    filelist = []
-    savelist = sum([files for _, _, files in os.walk(savepath)],[])
-    savelist = [file for file in savelist if file.endswith('vital')]
-    mergelist = [file[:-17] for file in savelist if 'merge' in file]
+USE_MULTIPROCESS = True
 
-    # 파일명을 기준으로 변경할 파일만 추출
-    for path, dir, files in os.walk(rawpath):
-        for file in files:
-            if os.path.splitext(file)[-1] != '.vital':
-                continue
-            
-            if file not in savelist and file[:-10] not in mergelist :
-                filelist.append(os.path.join(path, file))
-
-    return filelist, savelist
-
-# 1시간 이내 파일인지 아닌지 확인
-def checkVitalfile(file):
-    for filepath in file:
-        filename = filepath.split('\\')[-1]
-        try:
-            vf = vitaldb.VitalFile(filepath)
-        except:
-            continue
-        startTime = datetime.datetime.strptime(time.strftime("%Y/%m/%d %H:%M:%S", time.localtime(vf.dtstart)),"%Y/%m/%d %H:%M:%S")
-        startDateHour = startTime.replace(minute=0, second=0)
-        endTime = datetime.datetime.strptime(time.strftime("%Y/%m/%d %H:%M:%S", time.localtime(vf.dtend)),"%Y/%m/%d %H:%M:%S")
-        endDateHour = endTime.replace(minute=0, second=0)
-        if endDateHour - startDateHour != datetime.timedelta(0):
-            cropVitalfile(filename, filepath, vf, startTime, startDateHour, endDateHour)
-        else:
-            newpath = savepath + filepath.strip(filename).split('/',2)[2]
-            os.makedirs(newpath, exist_ok=True)
-            try:
-                vf.to_vital(newpath+filename+'.tmp')
-            except KeyboardInterrupt:
-                quit()
-            except BadGzipFile:
-                print(file)
-                pass
-            else:
-                move(newpath+filename+'.tmp', newpath+filename)
-
-# 1시간이상인 파일들은 정각 단위를 기준으로 crop
-def cropVitalfile(file, filepath, vf, dtstart, startDateHour, endDateHour):
-    global savepath
-    print(f'trimming {file}', end='...', flush=True)
-    timeCount = ((endDateHour - startDateHour)/3600).seconds
-    for hour in range(timeCount+1):
-        newvf = copy.deepcopy(vf)
-        if hour == 0 :
-            newdtend = time.mktime(dtstart.replace(minute=59, second=59).timetuple())
-            newvf.crop(dtend=newdtend)
-            filename = file
-
-        elif 0 < hour and hour < timeCount:
-            newdtstart = newdtend + 1
-            newdtend = newdtend + 3600
-            oldDatetime = file.split('/')[-1].split('_',2)[2].split('.')[0]
-            newDate = str(re.sub(r'[^0-9]','',time.strftime("%Y/%m/%d %H:%M:%S", time.localtime(newdtstart))))
-            newDatetime = newDate[2:8]+'_'+newDate[8:]
-            filename = file.replace(oldDatetime, newDatetime)
-            newvf.crop(newdtstart, newdtend)
+# 1시간 이내 파일 인지 아닌지 확인
+def cut_vital_file(prefix_done_list, filepath):
+    filename = os.path.basename(filepath)
+    try:
+        vf = vitaldb.VitalFile(filepath)
+    except:
+        return
+    if not vf.dtstart:  # 1KB 파일 등 이상한 파일
+        return
         
-        elif hour == timeCount :
-            newdtstart = newdtend + 1
-            oldDatetime = file.split('/')[-1].split('_',2)[2].split('.')[0]
-            newDate = str(re.sub(r'[^0-9]','',time.strftime("%Y/%m/%d %H:%M:%S", time.localtime(newdtstart))))
-            newDatetime = newDate[2:8]+'_'+newDate[8:]
-            filename = file.replace(oldDatetime, newDatetime)
-            newvf.crop(dtfrom=newdtstart)
+    newdir = OUTPUT_DIR + filepath[len(RAW_DIR):-len(filename)]
+    os.makedirs(newdir, exist_ok=True)
 
-        newpath = savepath + '\\'.join(filepath.split('/',2)[2].split('\\')[:-1]) + '\\'
-        if hour > 0 :
-            newpath = newpath.replace('20'+oldDatetime.split('_')[0][:4],newDate[:6])
-            newpath = newpath.replace(oldDatetime.split('_')[0],newDate[2:8])
+    print(f'cutting {filename}')
+    dtstart_hour = (int(vf.dtstart) // 3600) * 3600
+    dtend_hour = (int(vf.dtend) // 3600) * 3600
+    for dthour in range(dtstart_hour, dtend_hour + 3600, 3600):
+        filestart = max(vf.dtstart, dthour)
+        fileend = min(vf.dtend, dthour + 3600)
+        if fileend - filestart < 1:  # 커팅 과정에서 생기는 1초 이내 짜투리 파일은 삭제
+            continue
             
-        os.makedirs(newpath, exist_ok=True)
+        # 모든 파일은 반드시 cut.vital 확장자
+        newname = filename[:-19] + datetime.datetime.fromtimestamp(filestart).strftime("%y%m%d_%H%M%S") + '.cut.vital'
+        prefix = newname.split('.')[0][:-4]
+        if prefix in prefix_done_list:  # 이미 완료된 prefix에 대한 cut 파일은 생성하지 않는다
+            continue
 
+        newvf = copy.deepcopy(vf)
+        newvf.crop(filestart, fileend)
         try:
-            newvf.to_vital(os.path.join(newpath,filename)+'.tmp') 
-        except KeyboardInterrupt:
-            quit()
-        except BadGzipFile:
-            print('error file: {file}')
+            # newDatetime = newdt.strftime("%y%m%d_%H%M%S")
+            print(f'-> {newname} ({newvf.dtend - newvf.dtstart:.1f} sec)')
+            newpath = newdir + newname
+            newvf.to_vital(newpath + '.tmp') 
+            if os.path.exists(newpath+'.tmp'):
+                shutil.move(newpath+'.tmp', newpath)
+        except:
+            print(f'error file: {file}')
+
+# cutfilepath_list로 지정된 경로들 중에서 prefix가 포함된 파일들을 합침
+def merge_vital_file(cutfilepath_list, prefix):
+    print(f'merging {prefix}')
+    matched_path_list = [filepath for filepath in cutfilepath_list if prefix in filepath]  # 이번에 합쳐야할 파일 목록들을 뽑음
+    if len(matched_path_list) == 0:
+        return
+    odir = os.path.dirname(matched_path_list[0])
+    opath = odir + '/' + prefix + '0000.vital'  # YYMMDD_HH0000.vital 파일명으로 합침
+    if len(matched_path_list) == 1:
+        shutil.move(matched_path_list[0], opath)
+    else:  # merge 필요
+        try:
+            vf = vitaldb.VitalFile(matched_path_list)
+            vf.to_vital(opath+'.tmp')
+            for filepath in matched_path_list:
+                print(f'removing {os.path.basename(filepath)}')
+                os.remove(filepath)
+            if os.path.exists(opath + '.tmp'):
+                shutil.move(opath+'.tmp', opath)
+        except:
             pass
-        else:
-            move(os.path.join(newpath,filename)+'.tmp', os.path.join(newpath,filename))
-    print('done')
-
-# 1시간이내 파일이 여러개인지 확인
-def findVitalfile(name, path):
-    for dirpath, dirname, filename in os.walk(savepath):
-        if name in filename:
-            return str(os.path.join(dirpath, name))
-
-# 1시간이내 파일이 여러개인 경우 merge
-def mergeVitalfile():
-    replaceVitalfile()
-    savelist = sum([files for _, _, files in os.walk(savepath)],[])
-    # mergelist = [file for file in savelist if not "merge" in file ] 
-    cutlist = [file[:file.find(file.split('_')[3])+2] for file in savelist if file.endswith('vital')]
-    count = 0
-    for key, value in Counter(cutlist).items():
-        filelist = []
-        if value >= 2:
-            matching = [s for s in savelist if key in s]
-            for file in matching:
-                filepath = findVitalfile(file, savepath)
-                filelist.append(filepath)
-            print(f'merging {key}', end='...', flush=True)
-
-            filename = filelist[0].replace('.vital','_merged.vital')
-            # name = filename.split('\\')[-1]
-            try:
-                print('validating '+filename.split("\\")[-1], end='...', flush=True)
-                vf = vitaldb.VitalFile(filelist)
-                vf.to_vital(filename+'.tmp')
-                for filepath in filelist:
-                    os.remove(filepath)
-            except KeyboardInterrupt:
-                quit()
-            else:
-                move(filename+'.tmp', filename)
-                count += 1
-            print('done')
-
-    finalist = sum([files for _, _, files in os.walk(savepath)],[])
-    
-    return finalist, count 
-
-def onlyMergeVitalfile():
-    print(f'# only merging', end='...', flush=True)
-    finalist, count = mergeVitalfile()
-    print('done')
-    print(f'# merging file counts: {count}')
-    _END_AT = datetime.datetime.now()
-    print("# begin:", _BEGIN_AT)
-    print("# end:", _END_AT)
-    quit()
 
 if __name__ == '__main__':
-    num_cores=multiprocessing.cpu_count()-1
-    replaceVitalfile()
-    fileList, savelist = countVitalfile()
-    if ONLY_MERGE : 
-        onlyMergeVitalfile()
-    print(f'# scanning {len(fileList)} vitalfiles')
-    splited_data =  np.array_split(fileList, num_cores)
-    splited_data = [x.tolist() for x in splited_data]   
-    result = parmap.map(checkVitalfile, splited_data, pm_pbar=True, pm_processes=num_cores)
-    finalist, count = mergeVitalfile()
+    # STEP1: cut vital files
+    prefix_done_list = set()
+    for rootdir, dirs, files in os.walk(OUTPUT_DIR):
+        for filename in files:
+            if filename.endswith('.vital'):
+                if filename.endswith('.cut.vital'):  # 이전 작업의 쓰레기
+                    os.remove(rootdir + '/' + filename)
+                else:  # 완료된 prefix
+                    prefix = filename.split('.')[0][:-4]
+                    prefix_done_list.add(prefix)
+            if filename.endswith('.tmp'):  # 이전 작업의 쓰레기
+                os.remove(rootdir + '/' + filename)
 
-    _END_AT = datetime.datetime.now()
-    print("# begin:", _BEGIN_AT)
-    print("# end:", _END_AT)
-    print(f'# original file counts: {len(fileList)}\n# result file counts: {len(set(finalist)-set(savelist))}')
+    # 입력 폴더에서 파일명을 기준으로 변경할 파일만 추출
+    todo_path_list = set()
+    for rootdir, dirs, files in os.walk(RAW_DIR):
+        for filename in files:
+            if filename[-6:] == '.vital':
+                todo_path_list.add(os.path.join(rootdir, filename))
+
+    if USE_MULTIPROCESS:
+        Parallel(os.cpu_count())(delayed(cut_vital_file)(prefix_done_list, filepath) for filepath in todo_path_list)
+    else:
+        for filepath in todo_path_list: cut_vital_file(prefix_done_list, filepath)
+
+    # STEP2: merge vital files
+    
+    cutfilepath_list = set()
+    prefix_todo_list = set()
+    for rootdir, dirs, files in os.walk(OUTPUT_DIR):
+        for filename in files:
+            if filename.endswith('.cut.vital'):  # cut.vital 인 파일만 합친다
+                cutfilepath_list.add(rootdir + '/' + filename)
+                prefix = filename.split('.')[0][:-4]
+                prefix_todo_list.add(prefix)
+
+    if USE_MULTIPROCESS:
+        Parallel(os.cpu_count())(delayed(merge_vital_file)(cutfilepath_list, prefix) for prefix in prefix_todo_list)
+    else:
+        for prefix in prefix_todo_list: merge_vital_file(cutfilepath_list, prefix)
